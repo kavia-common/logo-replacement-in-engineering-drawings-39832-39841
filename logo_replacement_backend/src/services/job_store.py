@@ -149,9 +149,13 @@ class JobStore:
                             "confidence": b.confidence,
                             "method": b.method,
                             "page": b.page,
+                            "dtype": b.dtype,
                         }
                         for b in d.boxes
                     ],
+                    "replaced_count": getattr(d, "replaced_count", 0),
+                    "replaced_logo_count": getattr(d, "replaced_logo_count", 0),
+                    "replaced_text_count": getattr(d, "replaced_text_count", 0),
                 }
                 for d in detections
             ]
@@ -187,6 +191,7 @@ class JobStore:
                             confidence=float(b.get("confidence", 0)),
                             method=b.get("method"),
                             page=b.get("page"),
+                            dtype=b.get("dtype"),
                         )
                     )
                 detections.append(
@@ -196,6 +201,9 @@ class JobStore:
                         method=d.get("method"),
                         boxes=boxes,
                         reason=d.get("reason"),
+                        replaced_count=int(d.get("replaced_count", 0)),
+                        replaced_logo_count=int(d.get("replaced_logo_count", 0)),
+                        replaced_text_count=int(d.get("replaced_text_count", 0)),
                     )
                 )
 

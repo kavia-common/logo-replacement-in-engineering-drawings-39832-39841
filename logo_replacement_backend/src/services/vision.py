@@ -21,6 +21,7 @@ class Detection:
     width: float
     height: float
     confidence: float = 0.5
+    dtype: str = "logo"  # logo | text
 
 
 def _encode_image_to_data_url(img: Image.Image) -> str:
@@ -31,10 +32,10 @@ def _encode_image_to_data_url(img: Image.Image) -> str:
     return f"data:image/png;base64,{b64}"
 
 
-def _normalize_box(box: dict) -> Optional[Tuple[float, float, float, float, float]]:
+def _normalize_box(box: dict) -> Optional[Tuple[float, float, float, float, float, str]]:
     """
     Parse a box dict that should have:
-    { "x": 0-1, "y": 0-1, "w": 0-1, "h": 0-1, "confidence": 0-1 }
+    { "x": 0-1, "y": 0-1, "w": 0-1, "h": 0-1, "confidence": 0-1, "type": "logo|text" }
     """
     try:
         x = float(box.get("x"))
@@ -42,9 +43,12 @@ def _normalize_box(box: dict) -> Optional[Tuple[float, float, float, float, floa
         w = float(box.get("w"))
         h = float(box.get("h"))
         conf = float(box.get("confidence", 0.5))
+        dtype = str(box.get("type", "logo")).lower().strip()
+        if dtype not in ("logo", "text"):
+            dtype = "logo"
         if not (0 <= x <= 1 and 0 <= y <= 1 and 0 < w <= 1 and 0 < h <= 1):
             return None
-        return x, y, w, h, conf
+        return x, y, w, h, conf, dtype
     except Exception:
         return None
 
@@ -100,37 +104,75 @@ class VisionClient:
         *,
         old_logo_image: Optional[Path] = None,
     ) -> List[Detection]:
-        """Detect logo bounding boxes on the given image.
+        """Backward-compatible: detect only logos using primary pipeline."""
+        regions = self.detect_regions(image_path, old_logo_image=old_logo_image)
+        return [d for d in regions if d.dtype == "logo"]
+
+    # PUBLIC_INTERFACE
+    def detect_regions(
+        self,
+        image_path: Path,
+        *,
+        old_logo_image: Optional[Path] = None,
+    ) -> List[Detection]:
+        """Detect both logo marks and branded text regions.
 
         Returns:
-            A list of Detection rectangles in pixel coordinates, may be empty.
+            A list of Detection rectangles in pixel coordinates, each with dtype in {logo, text}.
 
         Strategy:
-            - If CONFIG.method == "vision": try OpenAI, fallback to template if fails.
-            - If "template": use OpenCV template matching.
-            - If "auto": try vision first if OPENAI_API_KEY exists; otherwise template.
+            - Logo detection via existing 'method' (vision/template/auto).
+            - Text detection based on CONFIG.detection_text_method:
+              - vision: ask OpenAI Vision for text regions containing BRAND_KEYWORD (if provided)
+              - heuristic: OpenCV-based MSER/contours and (optional) OCR filter
+              - auto: try vision if API available else heuristic
         """
-        method = CONFIG.method
         api_available = bool(self.api_key)
 
-        if method == "vision":
-            boxes = self._detect_with_openai(image_path)
-            if boxes is not None:
-                return boxes
-            # fallback
-            return self._detect_with_template(image_path, old_logo_image)
-        elif method == "template":
-            return self._detect_with_template(image_path, old_logo_image)
+        detections: List[Detection] = []
+
+        # 1) Logo regions (existing logic)
+        logo_method = CONFIG.method
+        if logo_method == "vision":
+            boxes = self._detect_with_openai(image_path, want_text=False)
+            if boxes is None:
+                boxes = self._detect_with_template(image_path, old_logo_image)
+        elif logo_method == "template":
+            boxes = self._detect_with_template(image_path, old_logo_image)
+        else:
+            boxes = self._detect_with_openai(image_path, want_text=False) if api_available else None
+            if boxes is None:
+                boxes = self._detect_with_template(image_path, old_logo_image)
+        for b in boxes or []:
+            b.dtype = "logo"
+            detections.append(b)
+
+        # 2) Text regions
+        text_method = CONFIG.detection_text_method
+        text_boxes: List[Detection] = []
+        if text_method == "vision":
+            text_boxes = self._detect_with_openai(image_path, want_text=True) or []
+        elif text_method == "heuristic":
+            text_boxes = self._detect_text_heuristic(image_path)
         else:
             # auto
             if api_available:
-                boxes = self._detect_with_openai(image_path)
-                if boxes is not None:
-                    return boxes
-            return self._detect_with_template(image_path, old_logo_image)
+                text_boxes = self._detect_with_openai(image_path, want_text=True) or []
+            if not text_boxes:
+                text_boxes = self._detect_text_heuristic(image_path)
 
-    def _detect_with_openai(self, image_path: Path) -> Optional[List[Detection]]:
-        """Use OpenAI Vision to detect normalized bounding boxes. Return None on failure."""
+        # Normalize dtype and append
+        for tb in text_boxes:
+            tb.dtype = "text"
+            detections.append(tb)
+
+        return detections
+
+    def _detect_with_openai(self, image_path: Path, want_text: bool = False) -> Optional[List[Detection]]:
+        """Use OpenAI Vision to detect normalized bounding boxes. Return None on failure.
+
+        If want_text=True, request detection of branded text regions possibly matching CONFIG.brand_keyword.
+        """
         if not self.api_key:
             return None
 
@@ -142,16 +184,28 @@ class VisionClient:
         thumb, scale = _resize_for_detection(img, CONFIG.detect_thumbnail_max_px)
         data_url = _encode_image_to_data_url(thumb)
 
-        # Compose prompt to strictly return JSON
+        # Compose prompt to strictly return JSON with 'type' field
+        brand = CONFIG.brand_keyword
+        text_hint = ""
+        if want_text:
+            if brand:
+                text_hint = (
+                    f" Also detect any occurrences of brand text matching '{brand}' (case-insensitive), "
+                    "including variants or stylized text."
+                )
+            else:
+                text_hint = " Also detect any prominent brand/name text likely representing company names."
+
         system_prompt = (
             "You are a vision assistant specialized in document mark-up. "
-            "Identify existing company logos or brand marks in the image. "
+            "Identify existing company logos, brand marks, and optionally branded text in engineering drawings. "
             "Return a pure JSON object with an array 'boxes' where each box has "
-            "keys: x, y, w, h (all normalized 0-1 relative to the image width/height) "
-            "and confidence (0-1). Do not include any text outside JSON."
+            "keys: x, y, w, h (all normalized 0-1 relative to the image width/height), "
+            "confidence (0-1), and type ('logo'|'text'). Do not include any text outside JSON."
         )
         user_prompt = (
-            "Detect existing logos or brand marks (stamps at title block, corner logos, etc.). "
+            "Detect existing logos or brand marks (stamps at title block, corner logos, etc.)."
+            f"{text_hint} "
             "If none are present, return {\"boxes\": []}."
         )
         try:
@@ -216,7 +270,7 @@ class VisionClient:
                     norm = _normalize_box(b)
                     if not norm:
                         continue
-                    nx, ny, nw, nh, conf = norm
+                    nx, ny, nw, nh, conf, dtype = norm
                     if conf < CONFIG.confidence_threshold:
                         continue
                     # Map to pixels on thumbnail then we'll rescale up to original using 1/scale
@@ -230,7 +284,7 @@ class VisionClient:
                         py = py / scale
                         pw = pw / scale
                         ph = ph / scale
-                    dets.append(Detection(x=px, y=py, width=pw, height=ph, confidence=conf))
+                    dets.append(Detection(x=px, y=py, width=pw, height=ph, confidence=conf, dtype=dtype))
                 return dets
         except Exception:
             return None
@@ -319,3 +373,106 @@ class VisionClient:
             return [Detection(x=x, y=y, width=w, height=h, confidence=confidence)]
         except Exception:
             return []
+
+    def _detect_text_heuristic(self, image_path: Path) -> List[Detection]:
+        """Detect text-like regions using OCR-free heuristics (MSER + contour filtering).
+        Optionally filter by BRAND_KEYWORD using Tesseract if enabled by config and available.
+        """
+        try:
+            cv2, np = _load_cv2()
+        except Exception:
+            return []
+
+        # Load image
+        try:
+            pil = Image.open(image_path)
+            small, scale = _resize_for_detection(pil, CONFIG.detect_thumbnail_max_px)
+            img = _pil_to_cv(small)
+            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        except Exception:
+            return []
+
+        H, W = gray.shape[:2]
+
+        # MSER to find text-like stable regions
+        try:
+            mser = cv2.MSER_create(_min_area=60, _max_area=max(3000, int(0.05 * W * H)))
+            regions, _ = mser.detectRegions(gray)
+            mask = np.zeros((H, W), dtype=np.uint8)
+            for p in regions:
+                cv2.fillPoly(mask, [p.reshape(-1, 1, 2)], 255)
+        except Exception:
+            # Fallback to simple threshold
+            _, mask = cv2.threshold(gray, 0, 255, cv2.THRESH_OTSU | cv2.THRESH_BINARY_INV)
+
+        # Morphological operations to group characters
+        kernel = np.ones((3, 3), np.uint8)
+        dil = cv2.dilate(mask, kernel, iterations=2)
+        contours, _ = cv2.findContours(dil, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+        brand = CONFIG.brand_keyword.lower()
+        boxes: List[Detection] = []
+        for cnt in contours:
+            x, y, w, h = cv2.boundingRect(cnt)
+            # Basic geometry filters: width>height (likely text line), reasonable size
+            if w < 20 or h < 10:
+                continue
+            if w > 0.95 * W or h > 0.5 * H:
+                continue
+            aspect = w / float(h)
+            if aspect < 1.2:  # prefer elongated regions
+                continue
+
+            # Map back to original coordinates
+            def unscale(v: float) -> float:
+                return v / (scale if scale != 0 else 1.0)
+
+            det = Detection(x=unscale(x), y=unscale(y), width=unscale(w), height=unscale(h), confidence=0.55, dtype="text")
+
+            # If tesseract is enabled and brand_keyword provided, do quick check
+            if CONFIG.enable_tesseract and brand:
+                try:
+                    import pytesseract  # type: ignore
+                    if CONFIG.tesseract_cmd:
+                        pytesseract.pytesseract.tesseract_cmd = CONFIG.tesseract_cmd
+                    # Crop ROI on thumbnail to speed up
+                    roi = gray[y : y + h, x : x + w]
+                    roi_pil = Image.fromarray(cv2.cvtColor(cv2.cvtColor(roi, cv2.COLOR_GRAY2BGR), cv2.COLOR_BGR2RGB))
+                    txt = pytesseract.image_to_string(roi_pil)
+                    if brand in (txt or "").lower():
+                        det.confidence = 0.75
+                    else:
+                        # Skip if OCR did not find the brand string
+                        continue
+                except Exception:
+                    # Ignore OCR failures and keep heuristic result
+                    pass
+
+            boxes.append(det)
+
+        # Deduplicate overlapping boxes (NMS-like)
+        boxes = self._nms(boxes, iou_thresh=0.3)
+        return boxes
+
+    def _nms(self, dets: List[Detection], iou_thresh: float = 0.3) -> List[Detection]:
+        """Simple Non-Max Suppression for overlapping detections."""
+        if not dets:
+            return dets
+        dets = sorted(dets, key=lambda d: d.confidence, reverse=True)
+        kept: List[Detection] = []
+        def iou(a: Detection, b: Detection) -> float:
+            ax1, ay1, ax2, ay2 = a.x, a.y, a.x + a.width, a.y + a.height
+            bx1, by1, bx2, by2 = b.x, b.y, b.x + b.width, b.y + b.height
+            inter_x1, inter_y1 = max(ax1, bx1), max(ay1, by1)
+            inter_x2, inter_y2 = min(ax2, bx2), min(ay2, by2)
+            iw, ih = max(0.0, inter_x2 - inter_x1), max(0.0, inter_y2 - inter_y1)
+            inter = iw * ih
+            if inter <= 0:
+                return 0.0
+            area_a = a.width * a.height
+            area_b = b.width * b.height
+            return inter / (area_a + area_b - inter + 1e-6)
+        for d in dets:
+            if all(iou(d, k) < iou_thresh for k in kept):
+                kept.append(d)
+        return kept

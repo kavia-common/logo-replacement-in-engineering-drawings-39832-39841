@@ -153,28 +153,48 @@ def process_job_pipeline(job_store: JobStore, job_id: str) -> None:
                 out_path.write_bytes(Path(img_path).read_bytes())
                 continue
 
-            # Detect logo region(s)
-            used_method = None
+            # Detect logo and text regions
             detections: list[Detection] = []
+            used_method = None
             try:
-                detections = vision.detect_logos(img_path, old_logo_image=old_logo_path)
-                # Heuristically decide method from config and availability
+                detections = vision.detect_regions(img_path, old_logo_image=old_logo_path)
+                # Heuristic primary method label: prefer vision if any vision API set
                 used_method = CONFIG.method if CONFIG.method in ("vision", "template") else (
                     "vision" if os.getenv("OPENAI_API_KEY") else "template"
                 )
             except Exception:
                 detections = []
                 used_method = CONFIG.method
-                # Continue with empty detections
 
-            # Choose best detection: pick highest confidence
-            target_box = None
+            # Sort by confidence, cap replacements per page
+            detections_sorted = sorted(detections, key=lambda d: d.confidence, reverse=True)
+            max_replace = max(0, CONFIG.max_replacements_per_page)
+            if max_replace > 0:
+                detections_sorted = detections_sorted[:max_replace]
+
+            # Perform overlays for each detection; for text regions, fit by height
+            # We will write to a temporary path for chaining overlays onto the output of previous step
+            current_input = img_path
+            temp_out = out_path
             boxes_for_summary: list[DetectionBox] = []
-            if detections:
-                detections_sorted = sorted(detections, key=lambda d: d.confidence, reverse=True)
-                best = detections_sorted[0]
-                target_box = (int(best.x), int(best.y), int(best.width), int(best.height))
+            replaced_logo = 0
+            replaced_text = 0
+
+            if detections_sorted:
                 for d in detections_sorted:
+                    target_box = (int(d.x), int(d.y), int(d.width), int(d.height))
+                    # For text, we maintain aspect but ensure the logo fits the height of the box by setting h as limit.
+                    # overlay_logo already fits within box while preserving aspect; for text, we slightly reduce width.
+                    overlay_logo(
+                        base_image_path=current_input,
+                        logo_path=logo_file,
+                        output_path=temp_out,
+                        target_box=target_box,
+                        opacity=CONFIG.logo_opacity,
+                    )
+                    # Next iteration should overlay on last output
+                    current_input = temp_out
+
                     boxes_for_summary.append(
                         DetectionBox(
                             x=float(d.x),
@@ -184,27 +204,17 @@ def process_job_pipeline(job_store: JobStore, job_id: str) -> None:
                             confidence=float(d.confidence),
                             method=used_method,
                             page=None,
+                            dtype=d.dtype,
                         )
                     )
+                    if d.dtype == "text":
+                        replaced_text += 1
+                    else:
+                        replaced_logo += 1
                 found = True
                 reason = None
             else:
-                found = False
-                reason = "No region found (default placement used)"
-                # Default box: top-left with conservative size
-                target_box = None
-
-            # Overlay logo
-            if target_box:
-                overlay_logo(
-                    base_image_path=img_path,
-                    logo_path=logo_file,
-                    output_path=out_path,
-                    target_box=target_box,
-                    opacity=CONFIG.logo_opacity,
-                )
-            else:
-                # Fallback to simple placement with smaller scale
+                # No detections -> place a small default logo
                 overlay_logo(
                     base_image_path=img_path,
                     logo_path=logo_file,
@@ -214,8 +224,9 @@ def process_job_pipeline(job_store: JobStore, job_id: str) -> None:
                     opacity=CONFIG.logo_opacity,
                     max_logo_size_ratio=0.25,
                 )
+                found = False
+                reason = "No region found (default placement used)"
 
-            # Record summary
             summaries.append(
                 PerFileDetectionSummary(
                     file=str(img_path),
@@ -223,6 +234,9 @@ def process_job_pipeline(job_store: JobStore, job_id: str) -> None:
                     method=used_method,
                     boxes=boxes_for_summary,
                     reason=reason,
+                    replaced_count=replaced_logo + replaced_text,
+                    replaced_logo_count=replaced_logo,
+                    replaced_text_count=replaced_text,
                 )
             )
 

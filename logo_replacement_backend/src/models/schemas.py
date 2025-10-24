@@ -39,8 +39,9 @@ class DetectionBox(BaseModel):
     width: float = Field(..., description="Box width in pixels at full resolution.")
     height: float = Field(..., description="Box height in pixels at full resolution.")
     confidence: float = Field(..., description="Confidence score 0..1.")
-    method: Optional[str] = Field(None, description="Method used: vision|template")
+    method: Optional[str] = Field(None, description="Method used: vision|template|heuristic|ocr")
     page: Optional[int] = Field(None, description="Optional page index if source was a PDF page image.")
+    dtype: Optional[str] = Field(None, description="Detection type: logo | text")
 
 
 # PUBLIC_INTERFACE
@@ -48,9 +49,12 @@ class PerFileDetectionSummary(BaseModel):
     """Per-file detection result summary for a processed input."""
     file: str = Field(..., description="Relative path of the input image/page processed.")
     found: bool = Field(..., description="Whether any region was detected.")
-    method: Optional[str] = Field(None, description="Method used for detection: vision|template")
+    method: Optional[str] = Field(None, description="Primary method used for detection: vision|template|heuristic|ocr")
     boxes: List[DetectionBox] = Field(default_factory=list, description="List of detected boxes (pixel coords).")
     reason: Optional[str] = Field(None, description="Optional reason or note when not found.")
+    replaced_count: int = Field(0, description="Number of regions replaced on this page.")
+    replaced_logo_count: int = Field(0, description="Number of logo regions replaced.")
+    replaced_text_count: int = Field(0, description="Number of text regions replaced.")
 
 
 # PUBLIC_INTERFACE
