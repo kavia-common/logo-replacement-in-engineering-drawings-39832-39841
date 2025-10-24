@@ -125,6 +125,7 @@ async def upload_files(
     drawings_files: Optional[List[UploadFile]] = File(
         None, description="Optional individual files (PNG, JPG/JPEG, TIFF, BMP, GIF, PDF). Can be multiple."
     ),
+    old_logo_image: Optional[UploadFile] = File(None, description="Optional reference image of the old logo for template matching fallback"),
 ) -> JobStatus:
     """
     Receive logo (required) and drawings via ZIP and/or individual files.
@@ -194,9 +195,20 @@ async def upload_files(
                 with out_path.open("wb") as f:
                     f.write(await uf.read())
 
+        # If optional old_logo_image provided, save it
+        if old_logo_image and old_logo_image.filename:
+            old_suffix = Path(old_logo_image.filename).suffix or ".png"
+            old_tmp = tmp_dir / f"old_logo{old_suffix}"
+            with old_tmp.open("wb") as f:
+                f.write(await old_logo_image.read())
+
         # Persist into job store
         JOB_STORE.update_status(job_id, status=JobState.UPLOADING, message="Saving uploads")
         JOB_STORE.save_uploads_flexible(job_id, logo_tmp, drawings_zip_tmp, files_tmp_dir)
+        # If we saved old_logo in _incoming, move it along to uploads root
+        for p in tmp_dir.glob("old_logo.*"):
+            dest = JOB_STORE.get_uploads_dir(job_id) / p.name
+            dest.write_bytes(p.read_bytes())
         return JOB_STORE.get_status(job_id)
     except HTTPException:
         raise
@@ -456,6 +468,7 @@ async def process_single_step(
     drawings_files: Optional[List[UploadFile]] = File(
         None, description="Optional individual files (PNG, JPG/JPEG, TIFF, BMP, GIF, PDF). Can be multiple."
     ),
+    old_logo_image: Optional[UploadFile] = File(None, description="Optional reference image of the old logo for template matching fallback"),
 ) -> dict:
     """Create a job, save uploads, queue processing, and return job_id immediately."""
     try:
@@ -510,8 +523,17 @@ async def process_single_step(
                 with out_path.open("wb") as f:
                     f.write(await uf.read())
 
+        # Optional old logo
+        if old_logo_image and old_logo_image.filename:
+            old_suffix = Path(old_logo_image.filename).suffix or ".png"
+            with (tmp_dir / f"old_logo{old_suffix}").open("wb") as f:
+                f.write(await old_logo_image.read())
+
         JOB_STORE.update_status(job_id, status=JobState.UPLOADING, message="Saving uploads")
         JOB_STORE.save_uploads_flexible(job_id, logo_tmp, drawings_zip_tmp, files_tmp_dir)
+        # Move old logo to uploads root if exists
+        for p in tmp_dir.glob("old_logo.*"):
+            (JOB_STORE.get_uploads_dir(job_id) / p.name).write_bytes(p.read_bytes())
 
         # Queue background processing
         JOB_STORE.update_status(job_id, status=JobState.RUNNING, progress=0, message="Queued for processing")

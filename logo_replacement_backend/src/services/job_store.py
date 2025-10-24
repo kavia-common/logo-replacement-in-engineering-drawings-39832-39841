@@ -4,9 +4,9 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Optional, List
 
-from src.models.schemas import JobCreated, JobState, JobStatus
+from src.models.schemas import JobCreated, JobState, JobStatus, PerFileDetectionSummary, DetectionBox
 from src.utils.zip_utils import safe_extract_zip
 
 
@@ -108,6 +108,7 @@ class JobStore:
         progress: Optional[int] = None,
         message: Optional[str] = None,
         result_url: Optional[str] = None,
+        detections: Optional[List[PerFileDetectionSummary]] = None,
     ) -> JobStatus:
         """Update job status/progress/message/result_url and persist.
 
@@ -117,6 +118,7 @@ class JobStore:
             progress: Optional new progress 0-100.
             message: Optional new message.
             result_url: Optional URL for downloading results.
+            detections: Optional complete list of per-file detection summaries.
 
         Returns:
             JobStatus instance with the updated metadata.
@@ -130,6 +132,29 @@ class JobStore:
             meta["message"] = message
         if result_url is not None:
             meta["result_url"] = result_url
+        if detections is not None:
+            # Serialize into simple dicts
+            meta["detections"] = [
+                {
+                    "file": d.file,
+                    "found": d.found,
+                    "method": d.method,
+                    "reason": d.reason,
+                    "boxes": [
+                        {
+                            "x": b.x,
+                            "y": b.y,
+                            "width": b.width,
+                            "height": b.height,
+                            "confidence": b.confidence,
+                            "method": b.method,
+                            "page": b.page,
+                        }
+                        for b in d.boxes
+                    ],
+                }
+                for d in detections
+            ]
         self._write_meta(job_id, meta)
         return self.get_status(job_id)
 
@@ -146,6 +171,34 @@ class JobStore:
     def get_status(self, job_id: str) -> JobStatus:
         """Load and return current job status."""
         meta = self._read_meta(job_id)
+        detections_serialized = meta.get("detections")
+        detections = None
+        if isinstance(detections_serialized, list):
+            detections = []
+            for d in detections_serialized:
+                boxes = []
+                for b in d.get("boxes", []):
+                    boxes.append(
+                        DetectionBox(
+                            x=float(b.get("x", 0)),
+                            y=float(b.get("y", 0)),
+                            width=float(b.get("width", 0)),
+                            height=float(b.get("height", 0)),
+                            confidence=float(b.get("confidence", 0)),
+                            method=b.get("method"),
+                            page=b.get("page"),
+                        )
+                    )
+                detections.append(
+                    PerFileDetectionSummary(
+                        file=d.get("file", ""),
+                        found=bool(d.get("found", False)),
+                        method=d.get("method"),
+                        boxes=boxes,
+                        reason=d.get("reason"),
+                    )
+                )
+
         return JobStatus(
             job_id=meta["job_id"],
             status=JobState(meta["status"]),
@@ -153,6 +206,7 @@ class JobStore:
             message=meta.get("message"),
             error=meta.get("error"),
             result_url=meta.get("result_url"),
+            detections=detections,
         )
 
     # PUBLIC_INTERFACE

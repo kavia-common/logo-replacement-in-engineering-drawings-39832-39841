@@ -42,6 +42,9 @@ uvicorn==0.34.0
 uvloop==0.21.0
 watchfiles==1.0.5
 websockets==15.0.1
-# PDF rasterization (prefer PyMuPDF). pdf2image is a fallback (requires Poppler in system).
+# PDF rasterization (prefer PyMuPDF). pdf2image is a fallback (requires Poppler installed on the system).
 PyMuPDF==1.25.2
 pdf2image==1.17.0
+# Template matching fallback
+opencv-python-headless==4.10.0.84
+numpy==2.1.3

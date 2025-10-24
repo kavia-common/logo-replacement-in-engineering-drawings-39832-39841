@@ -32,6 +32,28 @@ class JobCreated(BaseModel):
 
 
 # PUBLIC_INTERFACE
+class DetectionBox(BaseModel):
+    """Normalized or absolute detection box returned in status logs."""
+    x: float = Field(..., description="Top-left X in pixels relative to full resolution.")
+    y: float = Field(..., description="Top-left Y in pixels relative to full resolution.")
+    width: float = Field(..., description="Box width in pixels at full resolution.")
+    height: float = Field(..., description="Box height in pixels at full resolution.")
+    confidence: float = Field(..., description="Confidence score 0..1.")
+    method: Optional[str] = Field(None, description="Method used: vision|template")
+    page: Optional[int] = Field(None, description="Optional page index if source was a PDF page image.")
+
+
+# PUBLIC_INTERFACE
+class PerFileDetectionSummary(BaseModel):
+    """Per-file detection result summary for a processed input."""
+    file: str = Field(..., description="Relative path of the input image/page processed.")
+    found: bool = Field(..., description="Whether any region was detected.")
+    method: Optional[str] = Field(None, description="Method used for detection: vision|template")
+    boxes: List[DetectionBox] = Field(default_factory=list, description="List of detected boxes (pixel coords).")
+    reason: Optional[str] = Field(None, description="Optional reason or note when not found.")
+
+
+# PUBLIC_INTERFACE
 class JobStatus(BaseModel):
     """Represents current status of a job.
 
@@ -42,6 +64,7 @@ class JobStatus(BaseModel):
         message: Optional human-friendly status message.
         error: Optional error message if status is ERROR.
         result_url: Optional URL for downloading the result when available.
+        detections: Optional list of per-file detection summaries.
     """
     job_id: str = Field(..., description="Unique identifier for the job.")
     status: JobState = Field(..., description="Current state of the job.")
@@ -49,6 +72,10 @@ class JobStatus(BaseModel):
     message: Optional[str] = Field(None, description="Optional message describing current state.")
     error: Optional[str] = Field(None, description="Optional error message when job fails.")
     result_url: Optional[str] = Field(None, description="Optional URL pointing to the result artifact when available.")
+    detections: Optional[List[PerFileDetectionSummary]] = Field(
+        default=None,
+        description="Per-file detection summaries recorded during processing."
+    )
 
 
 # PUBLIC_INTERFACE
