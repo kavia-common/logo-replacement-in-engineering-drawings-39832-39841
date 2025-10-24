@@ -156,9 +156,20 @@ def process_job_pipeline(job_store: JobStore, job_id: str) -> None:
             progress = int(10 + (idx * 80) / total)
             job_store.update_status(job_id, progress=progress, message=f"Processed {idx}/{total} pages")
 
-        # Package into zip
+        # Preserve per-file outputs under result/out with original structure
+        out_dir = result_dir / "out"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        for p in work.rglob("*"):
+            if p.is_file():
+                rel = p.relative_to(work)
+                dest = out_dir / rel
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                # Use copy to preserve bytes and allow later streaming
+                dest.write_bytes(p.read_bytes())
+
+        # Package into zip (keep existing behavior)
         zip_path = result_dir / "processed.zip"
-        create_zip_from_directory(work, zip_path)
+        create_zip_from_directory(out_dir, zip_path)
         # Result URL is a hint for frontend; the download route will stream
         download_url = f"/jobs/{job_id}/download"
         job_store.set_result_url(job_id, result_url=download_url)

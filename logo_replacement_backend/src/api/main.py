@@ -16,7 +16,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 
-from src.models.schemas import JobCreated, JobState, JobStatus
+from src.models.schemas import JobCreated, JobState, JobStatus, ProcessedFile, ProcessedFileList
 from src.services.job_store import JobStore
 from src.services.processing import process_job_pipeline
 
@@ -45,6 +45,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["Content-Disposition"],
 )
 
 # Global thread pool to avoid blocking request handlers
@@ -282,6 +283,107 @@ def download_result(job_id: str):
         media_type="application/zip",
         filename=f"{job_id}-processed.zip",
         headers={"Content-Disposition": f'attachment; filename="{job_id}-processed.zip"'},
+    )
+
+
+def _guess_mime_type(filename: str) -> str:
+    """Basic mime guessing for common image/pdf types."""
+    ext = Path(filename).suffix.lower()
+    if ext in {".png"}:
+        return "image/png"
+    if ext in {".jpg", ".jpeg"}:
+        return "image/jpeg"
+    if ext in {".tif", ".tiff"}:
+        return "image/tiff"
+    if ext in {".bmp"}:
+        return "image/bmp"
+    if ext in {".gif"}:
+        return "image/gif"
+    if ext == ".pdf":
+        return "application/pdf"
+    return "application/octet-stream"
+
+
+# PUBLIC_INTERFACE
+@app.get(
+    "/jobs/{job_id}/files",
+    response_model=ProcessedFileList,
+    summary="List processed files",
+    description="List per-file processed outputs preserved under result/out/.",
+    tags=["jobs"],
+    responses={
+        200: {"description": "List of processed files"},
+        404: {"model": ErrorResponse, "description": "Job not found or results unavailable"},
+        409: {"model": ErrorResponse, "description": "Job not completed"},
+    },
+)
+def list_processed_files(job_id: str) -> ProcessedFileList:
+    """Return the relative paths of individually processed outputs."""
+    status_obj = _ensure_job_exists(job_id)
+    if status_obj.status != JobState.COMPLETED:
+        raise HTTPException(status_code=409, detail="Job not completed")
+
+    # Files are preserved under result/out/
+    out_dir = JOB_STORE.get_result_dir(job_id) / "out"
+    if not out_dir.exists():
+        # Backward compatibility: if no out dir, try listing from work dir
+        work_dir = JOB_STORE.get_work_dir(job_id)
+        if not work_dir.exists():
+            raise HTTPException(status_code=404, detail="No processed files available")
+        base = work_dir
+    else:
+        base = out_dir
+
+    files: list[ProcessedFile] = []
+    for p in base.rglob("*"):
+        if p.is_file():
+            rel = p.relative_to(base).as_posix()
+            files.append(ProcessedFile(filename=rel, size=p.stat().st_size, content_type=_guess_mime_type(rel)))
+    return ProcessedFileList(items=files)
+
+
+# PUBLIC_INTERFACE
+@app.get(
+    "/jobs/{job_id}/files/{file_path:path}",
+    summary="Download an individual processed file",
+    description="Stream a single processed file with proper Content-Type and Content-Disposition.",
+    tags=["jobs"],
+    responses={
+        200: {"description": "File stream"},
+        404: {"model": ErrorResponse, "description": "Job or file not found"},
+        409: {"model": ErrorResponse, "description": "Job not completed"},
+    },
+)
+def download_processed_file(job_id: str, file_path: str):
+    """Stream a single processed output file by relative path."""
+    status_obj = _ensure_job_exists(job_id)
+    if status_obj.status != JobState.COMPLETED:
+        raise HTTPException(status_code=409, detail="Job not completed")
+
+    base_out = JOB_STORE.get_result_dir(job_id) / "out"
+    base_alt = JOB_STORE.get_work_dir(job_id)
+
+    # Choose base that exists
+    base = base_out if base_out.exists() else base_alt
+    if not base.exists():
+        raise HTTPException(status_code=404, detail="Processed files not found")
+
+    # Normalize and prevent path traversal
+    requested = (base / file_path).resolve()
+    try:
+        requested.relative_to(base.resolve())
+    except Exception:
+        raise HTTPException(status_code=404, detail="Invalid path")
+
+    if not requested.exists() or not requested.is_file():
+        raise HTTPException(status_code=404, detail="File not found")
+
+    mime = _guess_mime_type(requested.name)
+    return FileResponse(
+        path=str(requested),
+        media_type=mime,
+        filename=Path(requested.name).name,
+        headers={"Content-Disposition": f'attachment; filename="{Path(requested.name).name}"'},
     )
 
 

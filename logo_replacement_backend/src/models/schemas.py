@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from enum import Enum
-from typing import Optional
+from typing import Optional, List
 
 from pydantic import BaseModel, Field
 
@@ -49,3 +49,17 @@ class JobStatus(BaseModel):
     message: Optional[str] = Field(None, description="Optional message describing current state.")
     error: Optional[str] = Field(None, description="Optional error message when job fails.")
     result_url: Optional[str] = Field(None, description="Optional URL pointing to the result artifact when available.")
+
+
+# PUBLIC_INTERFACE
+class ProcessedFile(BaseModel):
+    """Represents a single processed output file."""
+    filename: str = Field(..., description="Relative path/name of the processed file.")
+    size: int = Field(..., description="Size in bytes.")
+    content_type: str = Field(..., description="MIME type guess.")
+
+
+# PUBLIC_INTERFACE
+class ProcessedFileList(BaseModel):
+    """List of processed output files."""
+    items: List[ProcessedFile] = Field(default_factory=list, description="Collection of processed files.")
