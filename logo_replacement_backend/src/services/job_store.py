@@ -156,6 +156,7 @@ class JobStore:
                     "replaced_count": getattr(d, "replaced_count", 0),
                     "replaced_logo_count": getattr(d, "replaced_logo_count", 0),
                     "replaced_text_count": getattr(d, "replaced_text_count", 0),
+                    "placements": getattr(d, "placements", None),
                 }
                 for d in detections
             ]
@@ -204,6 +205,7 @@ class JobStore:
                         replaced_count=int(d.get("replaced_count", 0)),
                         replaced_logo_count=int(d.get("replaced_logo_count", 0)),
                         replaced_text_count=int(d.get("replaced_text_count", 0)),
+                        placements=d.get("placements"),
                     )
                 )
 

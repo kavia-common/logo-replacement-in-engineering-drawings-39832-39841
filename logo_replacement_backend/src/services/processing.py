@@ -10,7 +10,7 @@ from src.config import CONFIG
 from src.models.schemas import JobState, PerFileDetectionSummary, DetectionBox
 from src.services.job_store import JobStore
 from src.services.vision import VisionClient, Detection
-from src.utils.image_utils import overlay_logo
+from src.utils.image_utils import overlay_logo, place_logo_in_box
 from src.utils.zip_utils import create_zip_from_directory
 from src.utils.pdf_utils import rasterize_pdf_to_images, PdfRasterizerUnavailable, PdfRasterizationConfig
 
@@ -172,25 +172,37 @@ def process_job_pipeline(job_store: JobStore, job_id: str) -> None:
             if max_replace > 0:
                 detections_sorted = detections_sorted[:max_replace]
 
-            # Perform overlays for each detection; for text regions, fit by height
-            # We will write to a temporary path for chaining overlays onto the output of previous step
+            # Perform overlays for each detection using strict in-box placement.
+            # Chain overlays by feeding previous output as input for next placement.
             current_input = img_path
             temp_out = out_path
             boxes_for_summary: list[DetectionBox] = []
+            placements_info: list[dict] = []
             replaced_logo = 0
             replaced_text = 0
 
             if detections_sorted:
                 for d in detections_sorted:
                     target_box = (int(d.x), int(d.y), int(d.width), int(d.height))
-                    # For text, we maintain aspect but ensure the logo fits the height of the box by setting h as limit.
-                    # overlay_logo already fits within box while preserving aspect; for text, we slightly reduce width.
-                    overlay_logo(
+
+                    # Optional debug preview path per detection
+                    debug_path = None
+                    if CONFIG.debug_overlay:
+                        # Save into jobs/{id}/result/debug/ paralleling output structure
+                        debug_dir = job_store.get_result_dir(job_id) / "debug"
+                        # Build a debug filename unique to this input and detection
+                        safe_name = Path(img_path).stem
+                        debug_path = debug_dir / f"{safe_name}_x{int(d.x)}_y{int(d.y)}_w{int(d.width)}_h{int(d.height)}.png"
+
+                    placement = place_logo_in_box(
                         base_image_path=current_input,
                         logo_path=logo_file,
                         output_path=temp_out,
-                        target_box=target_box,
+                        box=target_box,
                         opacity=CONFIG.logo_opacity,
+                        fit_mode=CONFIG.overlay_fit_mode,
+                        padding_pct=CONFIG.overlay_padding_pct,
+                        debug_preview_path=debug_path,
                     )
                     # Next iteration should overlay on last output
                     current_input = temp_out
@@ -207,6 +219,7 @@ def process_job_pipeline(job_store: JobStore, job_id: str) -> None:
                             dtype=d.dtype,
                         )
                     )
+                    placements_info.append(placement)
                     if d.dtype == "text":
                         replaced_text += 1
                     else:
@@ -214,7 +227,7 @@ def process_job_pipeline(job_store: JobStore, job_id: str) -> None:
                 found = True
                 reason = None
             else:
-                # No detections -> place a small default logo
+                # No detections -> place a small default logo (legacy fallback)
                 overlay_logo(
                     base_image_path=img_path,
                     logo_path=logo_file,
@@ -237,6 +250,7 @@ def process_job_pipeline(job_store: JobStore, job_id: str) -> None:
                     replaced_count=replaced_logo + replaced_text,
                     replaced_logo_count=replaced_logo,
                     replaced_text_count=replaced_text,
+                    placements=placements_info if placements_info else None,
                 )
             )
 

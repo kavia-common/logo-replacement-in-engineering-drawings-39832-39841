@@ -1,0 +1,22 @@
+{
+  "job_id": "247ee32b-f9b1-4b15-b2ba-8b281579787c",
+  "status": "COMPLETED",
+  "progress": 100,
+  "message": "Completed",
+  "error": null,
+  "result_url": "/jobs/247ee32b-f9b1-4b15-b2ba-8b281579787c/download",
+  "created_at": "2025-10-24T08:01:18.358899+00:00",
+  "updated_at": "2025-10-24T08:01:22.281837+00:00",
+  "detections": [
+    {
+      "file": "/home/kavia/workspace/code-generation/logo-replacement-in-engineering-drawings-39832-39841/logo_replacement_backend/jobs/247ee32b-f9b1-4b15-b2ba-8b281579787c/work/_pdf_raster/DV0160000100_1_1 (3)_page-001.png",
+      "found": false,
+      "method": "template",
+      "reason": "No region found (default placement used)",
+      "boxes": [],
+      "replaced_count": 0,
+      "replaced_logo_count": 0,
+      "replaced_text_count": 0
+    }
+  ]
+}

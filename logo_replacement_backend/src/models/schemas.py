@@ -55,6 +55,11 @@ class PerFileDetectionSummary(BaseModel):
     replaced_count: int = Field(0, description="Number of regions replaced on this page.")
     replaced_logo_count: int = Field(0, description="Number of logo regions replaced.")
     replaced_text_count: int = Field(0, description="Number of text regions replaced.")
+    # Optional: per-placement rectangles actually used after padding/fit, for QA
+    placements: Optional[List[dict]] = Field(
+        default=None,
+        description="List of placement rectangles used (each dict includes x,y,width,height, fit_mode, padding_pct)."
+    )
 
 
 # PUBLIC_INTERFACE

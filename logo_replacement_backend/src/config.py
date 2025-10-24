@@ -31,5 +31,10 @@ class DetectionConfig:
     enable_tesseract: bool = os.getenv("ENABLE_TESSERACT", "false").lower() == "true"
     tesseract_cmd: str = os.getenv("TESSERACT_CMD", "").strip()  # optional absolute path
 
+    # Overlay placement configuration
+    overlay_fit_mode: str = os.getenv("OVERLAY_FIT_MODE", "contain").lower()  # contain | cover
+    overlay_padding_pct: float = float(os.getenv("OVERLAY_PADDING_PCT", "0.0"))  # 0..40 typical
+    debug_overlay: bool = os.getenv("DEBUG_OVERLAY", "false").lower() == "true"  # save debug previews
+
 
 CONFIG = DetectionConfig()
