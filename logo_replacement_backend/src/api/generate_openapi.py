@@ -14,6 +14,8 @@ from src.api.main import app
 # Note: These imports are not used directly here but ensure components/schemas
 # include JobCreated, JobStatus, JobState, etc.
 from src.models import schemas as _schemas  # noqa: F401
+# Note: The upload route defines explicit File parameters; FastAPI will generate the correct
+# multipart form fields (logo_image, drawings_zip, drawings_files) in the OpenAPI schema.
 
 
 def main() -> None:

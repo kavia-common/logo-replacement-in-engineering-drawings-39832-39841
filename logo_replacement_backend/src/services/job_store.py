@@ -157,34 +157,64 @@ class JobStore:
 
     # PUBLIC_INTERFACE
     def save_uploads(self, job_id: str, drawings_zip_path: Path, logo_image_path: Path) -> None:
-        """Save uploads into job uploads dir and extract drawings zip safely.
+        """Backward-compatible helper to save only ZIP + logo (legacy path)."""
+        self.save_uploads_flexible(job_id, logo_image_path, drawings_zip_path, None)
+
+    # PUBLIC_INTERFACE
+    def save_uploads_flexible(
+        self,
+        job_id: str,
+        logo_image_path: Path,
+        drawings_zip_path: Optional[Path] = None,
+        individual_files_dir: Optional[Path] = None,
+    ) -> None:
+        """Save uploads into job uploads dir supporting ZIP and/or individual files.
 
         The uploads directory will contain:
-            - drawings.zip (original)
-            - drawings/ (extracted)
-            - logo.ext (original logo file)
+            - logo.ext
+            - drawings.zip (if zip provided)
+            - drawings/ (extracted from zip if provided)
+            - files/ (individual uploaded files, if provided)
         """
         paths = _job_paths(self.base_dir, job_id)
         if not paths.uploads.exists():
             raise FileNotFoundError(f"Job uploads directory missing for job: {job_id}")
         paths.uploads.mkdir(parents=True, exist_ok=True)
 
-        # Copy original files
-        drawings_zip_dest = paths.uploads / "drawings.zip"
+        # Save logo
         logo_dest = paths.uploads / f"logo{Path(logo_image_path).suffix or '.png'}"
-
-        shutil.copy2(drawings_zip_path, drawings_zip_dest)
         shutil.copy2(logo_image_path, logo_dest)
 
-        # Extract safely
+        # If ZIP provided: copy and extract
         extracted_dir = paths.uploads / "drawings"
         extracted_dir.mkdir(parents=True, exist_ok=True)
-        safe_extract_zip(drawings_zip_dest, extracted_dir)
+        if drawings_zip_path is not None:
+            drawings_zip_dest = paths.uploads / "drawings.zip"
+            shutil.copy2(drawings_zip_path, drawings_zip_dest)
+            safe_extract_zip(drawings_zip_dest, extracted_dir)
+
+        # If individual files provided: copy into uploads/files preserving names
+        if individual_files_dir is not None and individual_files_dir.exists():
+            files_dest = paths.uploads / "files"
+            files_dest.mkdir(parents=True, exist_ok=True)
+            for p in individual_files_dir.rglob("*"):
+                if p.is_file():
+                    rel = p.relative_to(individual_files_dir)
+                    dest = files_dest / rel
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(p, dest)
 
         # Update meta
         meta = self._read_meta(job_id)
         meta["status"] = JobState.READY.value
-        meta["message"] = "Uploads saved and drawings extracted"
+        # Build informative message
+        parts = []
+        if drawings_zip_path is not None:
+            parts.append("ZIP extracted")
+        if individual_files_dir is not None and any((paths.uploads / "files").rglob("*")):
+            parts.append("individual files saved")
+        info = " and ".join(parts) if parts else "uploads saved"
+        meta["message"] = f"Uploads saved: {info}".strip()
         self._write_meta(job_id, meta)
 
     # PUBLIC_INTERFACE

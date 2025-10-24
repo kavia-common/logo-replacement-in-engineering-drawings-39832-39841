@@ -11,6 +11,7 @@ from fastapi import (
     UploadFile,
     status,
 )
+from typing import List, Optional
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
@@ -97,16 +98,19 @@ def create_job() -> JobCreated:
 @app.post(
     "/jobs/{job_id}/upload",
     response_model=JobStatus,
-    summary="Upload drawings ZIP and logo image",
+    summary="Upload drawings (ZIP and/or files) and logo image",
     description=(
-        "Upload the ZIP of drawings as 'drawings' form field and the new logo image as 'logo'. "
-        "Files are stored and drawings ZIP extracted. Status moves to READY on success.\n\n"
-        "Supported drawing formats inside the ZIP: PNG, JPG/JPEG, TIFF, BMP, GIF, and PDF. "
+        "Upload one or both of the following:\n"
+        "- drawings_zip: a .zip containing drawing images and/or PDFs\n"
+        "- drawings_files[]: individual files (PNG, JPG/JPEG, TIFF, BMP, GIF, PDF)\n"
+        "and the new logo image as 'logo_image' (required).\n\n"
+        "Files are stored and drawings ZIP extracted. Individual files are saved as-is. "
+        "Status moves to READY on success.\n\n"
         "PDFs will be rasterized into images before processing."
     ),
     tags=["jobs"],
     responses={
-        200: {"description": "Uploads saved and extracted"},
+        200: {"description": "Uploads saved"},
         400: {"model": ErrorResponse, "description": "Bad input"},
         404: {"model": ErrorResponse, "description": "Job not found"},
         500: {"model": ErrorResponse, "description": "Server error"},
@@ -114,39 +118,83 @@ def create_job() -> JobCreated:
 )
 async def upload_files(
     job_id: str,
-    drawings: UploadFile = File(..., description="ZIP file containing drawing images"),
-    logo: UploadFile = File(..., description="Logo image to overlay"),
+    logo_image: UploadFile = File(..., description="Logo image to overlay"),
+    drawings_zip: Optional[UploadFile] = File(None, description="Optional ZIP containing drawings (images/PDFs)"),
+    drawings_files: Optional[List[UploadFile]] = File(
+        None, description="Optional individual files (PNG, JPG/JPEG, TIFF, BMP, GIF, PDF). Can be multiple."
+    ),
 ) -> JobStatus:
-    """Receive drawings ZIP and logo image, save into job, and extract ZIP safely."""
+    """
+    Receive logo (required) and drawings via ZIP and/or individual files.
+    Save under uploads/:
+      - logo.ext
+      - drawings/ (extracted from ZIP if provided)
+      - files/ (individual files preserved with original names)
+    """
     _ensure_job_exists(job_id)
-    # Validate content types minimally
-    if not (drawings.filename and drawings.filename.lower().endswith(".zip")):
+
+    # Validate logo is present
+    if not (logo_image and logo_image.filename):
+        raise HTTPException(status_code=400, detail="logo_image file is required")
+
+    # Validate at least one drawings source
+    has_zip = bool(drawings_zip and drawings_zip.filename)
+    has_files = bool(drawings_files and len(drawings_files) > 0)
+    if not (has_zip or has_files):
         raise HTTPException(
             status_code=400,
-            detail=(
-                "drawings must be a .zip file containing images and/or PDFs. "
-                "Supported inside ZIP: PNG, JPG/JPEG, TIFF, BMP, GIF, PDF."
-            ),
+            detail="Provide at least one drawings source: drawings_zip or drawings_files[]",
         )
-    if not logo.filename:
-        raise HTTPException(status_code=400, detail="logo file is required")
+
+    # Validate zip extension if provided
+    if has_zip and not drawings_zip.filename.lower().endswith(".zip"):
+        raise HTTPException(status_code=400, detail="drawings_zip must be a .zip file")
+
+    # Validate individual files extensions
+    allowed_exts = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".gif", ".pdf"}
+    if has_files:
+        bad = [f.filename for f in drawings_files if not (f.filename and Path(f.filename).suffix.lower() in allowed_exts)]
+        if bad:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unsupported file types in drawings_files: {', '.join(bad)}. "
+                       f"Allowed: {', '.join(sorted(allowed_exts))}",
+            )
 
     try:
-        # Save incoming files to temp paths under the job
         uploads_dir = JOB_STORE.get_uploads_dir(job_id)
         tmp_dir = uploads_dir / "_incoming"
         tmp_dir.mkdir(parents=True, exist_ok=True)
-        drawings_path = tmp_dir / "drawings.zip"
-        logo_path = tmp_dir / f"logo{Path(logo.filename).suffix or '.png'}"
 
-        with drawings_path.open("wb") as f:
-            f.write(await drawings.read())
-        with logo_path.open("wb") as f:
-            f.write(await logo.read())
+        # Save logo
+        logo_suffix = Path(logo_image.filename).suffix or ".png"
+        logo_tmp = tmp_dir / f"logo{logo_suffix}"
+        with logo_tmp.open("wb") as f:
+            f.write(await logo_image.read())
 
-        # Persist into job store (copies to canonical locations and extracts)
+        # Prepare paths
+        drawings_zip_tmp: Optional[Path] = None
+        if has_zip:
+            drawings_zip_tmp = tmp_dir / "drawings.zip"
+            with drawings_zip_tmp.open("wb") as f:
+                f.write(await drawings_zip.read())
+
+        files_tmp_dir: Optional[Path] = None
+        if has_files:
+            files_tmp_dir = tmp_dir / "files"
+            files_tmp_dir.mkdir(parents=True, exist_ok=True)
+            # Save all individual files preserving file names
+            for uf in drawings_files or []:
+                if not uf.filename:
+                    continue
+                out_path = files_tmp_dir / Path(uf.filename).name
+                out_path.parent.mkdir(parents=True, exist_ok=True)
+                with out_path.open("wb") as f:
+                    f.write(await uf.read())
+
+        # Persist into job store
         JOB_STORE.update_status(job_id, status=JobState.UPLOADING, message="Saving uploads")
-        JOB_STORE.save_uploads(job_id, drawings_path, logo_path)
+        JOB_STORE.save_uploads_flexible(job_id, logo_tmp, drawings_zip_tmp, files_tmp_dir)
         return JOB_STORE.get_status(job_id)
     except HTTPException:
         raise

@@ -85,13 +85,23 @@ def process_job_pipeline(job_store: JobStore, job_id: str) -> None:
         result_dir.mkdir(parents=True, exist_ok=True)
 
         drawings_dir = uploads / "drawings"
+        files_dir = uploads / "files"
         logo_file = next((p for p in uploads.iterdir() if p.name.startswith("logo")), None)
-        if not drawings_dir.exists() or logo_file is None:
-            raise RuntimeError("Uploads missing: drawings or logo not found")
+        if logo_file is None:
+            raise RuntimeError("Uploads missing: logo not found")
 
-        # Build list of input images, rasterizing PDFs if found
+        # Build list of input images from both sources
         job_store.update_status(job_id, progress=5, message="Scanning inputs (images and PDFs)")
-        images = _prepare_rasterized_inputs(drawings_dir, work)
+
+        images: list[Path] = []
+
+        # From extracted ZIP if exists
+        if drawings_dir.exists():
+            images.extend(_prepare_rasterized_inputs(drawings_dir, work))
+
+        # From individual files if exists: mirror under a temp root to reuse same function
+        if files_dir.exists():
+            images.extend(_prepare_rasterized_inputs(files_dir, work))
         total = max(1, len(images))
         job_store.update_status(job_id, message=f"Found {len(images)} pages/images to process")
 
