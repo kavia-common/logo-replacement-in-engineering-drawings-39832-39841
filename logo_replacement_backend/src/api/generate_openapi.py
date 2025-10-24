@@ -3,7 +3,7 @@ import os
 
 from src.api.main import app
 
-# Get the OpenAPI schema
+# Get the OpenAPI schema after routes are registered
 openapi_schema = app.openapi()
 
 # Write to file
