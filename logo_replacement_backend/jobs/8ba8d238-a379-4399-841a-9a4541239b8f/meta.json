@@ -1,0 +1,10 @@
+{
+  "job_id": "8ba8d238-a379-4399-841a-9a4541239b8f",
+  "status": "COMPLETED",
+  "progress": 100,
+  "message": "Completed",
+  "error": null,
+  "result_url": "/jobs/8ba8d238-a379-4399-841a-9a4541239b8f/download",
+  "created_at": "2025-10-24T07:29:01.483326+00:00",
+  "updated_at": "2025-10-24T07:29:06.099768+00:00"
+}
