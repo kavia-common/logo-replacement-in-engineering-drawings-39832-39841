@@ -26,6 +26,8 @@ app = FastAPI(
         "REST API for processing engineering drawing images by detecting and replacing logos. "
         "Create a job, upload a ZIP of drawings and a logo image, start processing, "
         "poll status, and download the processed ZIP.\n\n"
+        "The drawings ZIP may contain raster images (PNG/JPG/TIFF/BMP/GIF) and PDFs. "
+        "PDFs are rasterized per page internally before logo detection.\n\n"
         "WebSocket is not used in this demo; poll GET /jobs/{job_id}/status for updates."
     ),
     version="0.1.0",
@@ -98,7 +100,9 @@ def create_job() -> JobCreated:
     summary="Upload drawings ZIP and logo image",
     description=(
         "Upload the ZIP of drawings as 'drawings' form field and the new logo image as 'logo'. "
-        "Files are stored and drawings ZIP extracted. Status moves to READY on success."
+        "Files are stored and drawings ZIP extracted. Status moves to READY on success.\n\n"
+        "Supported drawing formats inside the ZIP: PNG, JPG/JPEG, TIFF, BMP, GIF, and PDF. "
+        "PDFs will be rasterized into images before processing."
     ),
     tags=["jobs"],
     responses={
@@ -117,7 +121,13 @@ async def upload_files(
     _ensure_job_exists(job_id)
     # Validate content types minimally
     if not (drawings.filename and drawings.filename.lower().endswith(".zip")):
-        raise HTTPException(status_code=400, detail="drawings must be a .zip file")
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "drawings must be a .zip file containing images and/or PDFs. "
+                "Supported inside ZIP: PNG, JPG/JPEG, TIFF, BMP, GIF, PDF."
+            ),
+        )
     if not logo.filename:
         raise HTTPException(status_code=400, detail="logo file is required")
 
