@@ -143,9 +143,30 @@ def place_logo_in_box(
     px = x + max(0, (w - lw) // 2)
     py = y + max(0, (h - lh) // 2)
 
-    # Composite only within the bounding rectangle for safety
+    # Composite only within the target rectangle (crop if cover overflows)
     canvas = Image.new("RGBA", base.size, (0, 0, 0, 0))
-    canvas.paste(logo_resized, (px, py), mask=logo_resized)
+    # Compute intersection of paste region and target box
+    paste_x1, paste_y1 = px, py
+    paste_x2, paste_y2 = px + lw, py + lh
+    box_x1, box_y1, box_x2, box_y2 = x, y, x + w, y + h
+
+    inter_x1 = max(paste_x1, box_x1)
+    inter_y1 = max(paste_y1, box_y1)
+    inter_x2 = min(paste_x2, box_x2)
+    inter_y2 = min(paste_y2, box_y2)
+
+    if inter_x2 > inter_x1 and inter_y2 > inter_y1:
+        # Crop the logo to the intersection if necessary
+        crop_left = inter_x1 - paste_x1
+        crop_top = inter_y1 - paste_y1
+        crop_right = crop_left + (inter_x2 - inter_x1)
+        crop_bottom = crop_top + (inter_y2 - inter_y1)
+        if crop_left > 0 or crop_top > 0 or crop_right < lw or crop_bottom < lh:
+            logo_to_paste = logo_resized.crop((int(crop_left), int(crop_top), int(crop_right), int(crop_bottom)))
+        else:
+            logo_to_paste = logo_resized
+        canvas.paste(logo_to_paste, (int(inter_x1), int(inter_y1)), mask=logo_to_paste)
+    # Merge
     out = Image.alpha_composite(base, canvas)
 
     # Persist with DPI if available

@@ -4,6 +4,27 @@ import os
 from dataclasses import dataclass
 
 
+def _validate_fit_mode(value: str) -> str:
+    """Validate overlay fit mode; fallback to 'contain' if invalid."""
+    v = (value or "contain").lower().strip()
+    return v if v in ("contain", "cover") else "contain"
+
+
+def _validate_padding_pct_env(value: str) -> float:
+    """
+    Validate and normalize OVERLAY_PADDING_PCT from env.
+
+    Accepts percent range 0..40 (inclusive) and returns FRACTION (0.0..0.40).
+    Any invalid value is clamped into the 0..40 range.
+    """
+    try:
+        pct = float(value)
+    except Exception:
+        pct = 0.0
+    pct = max(0.0, min(40.0, pct))
+    return pct / 100.0
+
+
 @dataclass(frozen=True)
 class DetectionConfig:
     """Configuration options for logo and text detection and overlay behavior."""
@@ -31,9 +52,11 @@ class DetectionConfig:
     enable_tesseract: bool = os.getenv("ENABLE_TESSERACT", "false").lower() == "true"
     tesseract_cmd: str = os.getenv("TESSERACT_CMD", "").strip()  # optional absolute path
 
-    # Overlay placement configuration
-    overlay_fit_mode: str = os.getenv("OVERLAY_FIT_MODE", "contain").lower()  # contain | cover
-    overlay_padding_pct: float = float(os.getenv("OVERLAY_PADDING_PCT", "0.0"))  # 0..40 typical
+    # Overlay placement configuration (env-driven defaults)
+    # overlay_fit_mode: validated contain|cover
+    overlay_fit_mode: str = _validate_fit_mode(os.getenv("OVERLAY_FIT_MODE", "contain"))
+    # overlay_padding_pct: stored as FRACTION (0.0..0.40). Env expects 0..40 percent.
+    overlay_padding_pct: float = _validate_padding_pct_env(os.getenv("OVERLAY_PADDING_PCT", "0.0"))
 
     # Debugging and QA
     # Always render debug overlays if true: detection and placed-logo outlines into result/debug

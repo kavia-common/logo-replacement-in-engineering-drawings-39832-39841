@@ -1,0 +1,24 @@
+{
+  "job_id": "97cbb956-6452-4800-99da-2093adb9f23b",
+  "config": {
+    "fit_mode": "contain",
+    "padding_pct": 0.0,
+    "logo_max_width_px": 600,
+    "detect_thumbnail_max_px": 1280
+  },
+  "files": [
+    {
+      "file": "/home/kavia/workspace/code-generation/logo-replacement-in-engineering-drawings-39832-39841/logo_replacement_backend/jobs/97cbb956-6452-4800-99da-2093adb9f23b/work/_pdf_raster/DV0160000100_1_1 (3)_page-001.png",
+      "orig_size": {
+        "width": 3229,
+        "height": 2261,
+        "mode": "RGB"
+      },
+      "thumbnail_max_px": 1280,
+      "detections": [],
+      "placements": [],
+      "fit_mode": "contain",
+      "padding_pct": 0.0
+    }
+  ]
+}
