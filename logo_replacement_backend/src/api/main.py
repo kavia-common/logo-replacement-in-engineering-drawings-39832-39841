@@ -10,6 +10,7 @@ from fastapi import (
     HTTPException,
     UploadFile,
     status,
+    BackgroundTasks,
 )
 from typing import List, Optional
 from fastapi.middleware.cors import CORSMiddleware
@@ -256,6 +257,19 @@ def get_status(job_id: str) -> JobStatus:
 
 # PUBLIC_INTERFACE
 @app.get(
+    "/status/{job_id}",
+    response_model=JobStatus,
+    summary="Get job status (alias)",
+    description="Alias for /jobs/{job_id}/status to align with simplified architecture.",
+    tags=["jobs"],
+)
+def get_status_alias(job_id: str) -> JobStatus:
+    """Alias endpoint returning job status."""
+    return get_status(job_id)
+
+
+# PUBLIC_INTERFACE
+@app.get(
     "/jobs/{job_id}/download",
     summary="Download processed ZIP",
     description="Stream the processed ZIP file with Content-Disposition header for download.",
@@ -284,6 +298,18 @@ def download_result(job_id: str):
         filename=f"{job_id}-processed.zip",
         headers={"Content-Disposition": f'attachment; filename="{job_id}-processed.zip"'},
     )
+
+
+# PUBLIC_INTERFACE
+@app.get(
+    "/download/{job_id}",
+    summary="Download processed ZIP (alias)",
+    description="Alias for /jobs/{job_id}/download for the simplified architecture.",
+    tags=["jobs"],
+)
+def download_result_alias(job_id: str):
+    """Alias endpoint streaming the result ZIP."""
+    return download_result(job_id)
 
 
 def _guess_mime_type(filename: str) -> str:
@@ -405,3 +431,95 @@ def delete_job(job_id: str):
     _ensure_job_exists(job_id)
     JOB_STORE.cleanup(job_id)
     return JSONResponse(status_code=status.HTTP_204_NO_CONTENT, content=None)
+
+
+# PUBLIC_INTERFACE
+@app.post(
+    "/process",
+    summary="Submit drawings and logo in a single request",
+    description=(
+        "Accept a single multipart/form-data with 'logo_image' and either 'drawings_zip' "
+        "or 'drawings_files[]'. Responds immediately with job_id while processing runs "
+        "in the background. Poll GET /status/{job_id} and download via GET /download/{job_id}."
+    ),
+    tags=["jobs"],
+    responses={
+        200: {"description": "Job accepted and started"},
+        400: {"model": ErrorResponse, "description": "Bad input"},
+        500: {"model": ErrorResponse, "description": "Server error"},
+    },
+)
+async def process_single_step(
+    background_tasks: BackgroundTasks,
+    logo_image: UploadFile = File(..., description="Logo image to overlay"),
+    drawings_zip: Optional[UploadFile] = File(None, description="Optional ZIP containing drawings (images/PDFs)"),
+    drawings_files: Optional[List[UploadFile]] = File(
+        None, description="Optional individual files (PNG, JPG/JPEG, TIFF, BMP, GIF, PDF). Can be multiple."
+    ),
+) -> dict:
+    """Create a job, save uploads, queue processing, and return job_id immediately."""
+    try:
+        created = JOB_STORE.create_job(initial_status=JobState.PENDING, message="Job created")
+        job_id = created.job_id
+
+        # Reuse validation from upload_files
+        if not (logo_image and logo_image.filename):
+            raise HTTPException(status_code=400, detail="logo_image file is required")
+        has_zip = bool(drawings_zip and drawings_zip.filename)
+        has_files = bool(drawings_files and len(drawings_files or []) > 0)
+        if not (has_zip or has_files):
+            raise HTTPException(status_code=400, detail="Provide drawings_zip or drawings_files[]")
+
+        if has_zip and not drawings_zip.filename.lower().endswith(".zip"):
+            raise HTTPException(status_code=400, detail="drawings_zip must be a .zip file")
+
+        allowed_exts = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".gif", ".pdf"}
+        if has_files:
+            bad = [f.filename for f in drawings_files or [] if not (f.filename and Path(f.filename).suffix.lower() in allowed_exts)]
+            if bad:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Unsupported file types in drawings_files: {', '.join(bad)}. Allowed: {', '.join(sorted(allowed_exts))}",
+                )
+
+        # Temporarily store inputs under uploads/_incoming then persist via JobStore
+        uploads_dir = JOB_STORE.get_uploads_dir(job_id)
+        tmp_dir = uploads_dir / "_incoming"
+        tmp_dir.mkdir(parents=True, exist_ok=True)
+
+        logo_suffix = Path(logo_image.filename).suffix or ".png"
+        logo_tmp = tmp_dir / f"logo{logo_suffix}"
+        with logo_tmp.open("wb") as f:
+            f.write(await logo_image.read())
+
+        drawings_zip_tmp: Optional[Path] = None
+        if has_zip:
+            drawings_zip_tmp = tmp_dir / "drawings.zip"
+            with drawings_zip_tmp.open("wb") as f:
+                f.write(await drawings_zip.read())
+
+        files_tmp_dir: Optional[Path] = None
+        if has_files:
+            files_tmp_dir = tmp_dir / "files"
+            files_tmp_dir.mkdir(parents=True, exist_ok=True)
+            for uf in drawings_files or []:
+                if not uf.filename:
+                    continue
+                out_path = files_tmp_dir / Path(uf.filename).name
+                out_path.parent.mkdir(parents=True, exist_ok=True)
+                with out_path.open("wb") as f:
+                    f.write(await uf.read())
+
+        JOB_STORE.update_status(job_id, status=JobState.UPLOADING, message="Saving uploads")
+        JOB_STORE.save_uploads_flexible(job_id, logo_tmp, drawings_zip_tmp, files_tmp_dir)
+
+        # Queue background processing
+        JOB_STORE.update_status(job_id, status=JobState.RUNNING, progress=0, message="Queued for processing")
+        EXECUTOR.submit(process_job_pipeline, JOB_STORE, job_id)
+
+        # Return only job_id to match requirement
+        return {"job_id": job_id}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to start processing: {exc}") from exc
