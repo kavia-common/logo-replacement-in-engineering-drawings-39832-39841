@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
-from typing import Iterable, List, Optional
+from typing import Iterable, List, Optional, Dict, Any
 
 from PIL import Image
 
@@ -120,6 +121,7 @@ def process_job_pipeline(job_store: JobStore, job_id: str) -> None:
         summaries: list[PerFileDetectionSummary] = []
 
         # Process each image
+        qa_records: List[Dict[str, Any]] = []
         for idx, img_path in enumerate(images, start=1):
             # Determine output path preserving structure as before
             if drawings_dir.exists() and img_path.is_relative_to(drawings_dir):
@@ -134,11 +136,11 @@ def process_job_pipeline(job_store: JobStore, job_id: str) -> None:
 
             out_path.parent.mkdir(parents=True, exist_ok=True)
 
-            # Create small thumbnail for speed (not saved; vision client internally resizes)
+            # Read original image for metadata and possible debug overlay base
             try:
                 with Image.open(img_path) as im:
-                    # Touch to ensure readable
-                    _ = im.size
+                    orig_w, orig_h = im.size
+                    orig_mode = im.mode
             except Exception:
                 summaries.append(
                     PerFileDetectionSummary(
@@ -181,18 +183,33 @@ def process_job_pipeline(job_store: JobStore, job_id: str) -> None:
             replaced_logo = 0
             replaced_text = 0
 
+            # Per-file QA record
+            qa_item: Dict[str, Any] = {
+                "file": str(img_path),
+                "orig_size": {"width": orig_w, "height": orig_h, "mode": orig_mode},
+                "thumbnail_max_px": CONFIG.detect_thumbnail_max_px,
+                "detections": [],
+                "placements": [],
+                "fit_mode": CONFIG.overlay_fit_mode,
+                "padding_pct": CONFIG.overlay_padding_pct,
+            }
+
             if detections_sorted:
+                debug_dir = job_store.get_result_dir(job_id) / "debug"
                 for d in detections_sorted:
-                    target_box = (int(d.x), int(d.y), int(d.width), int(d.height))
+                    # Clamp and ensure integer pixel box
+                    tx = max(0, int(round(d.x)))
+                    ty = max(0, int(round(d.y)))
+                    tw = max(1, int(round(d.width)))
+                    th = max(1, int(round(d.height)))
+                    target_box = (tx, ty, tw, th)
 
                     # Optional debug preview path per detection
                     debug_path = None
-                    if CONFIG.debug_overlay:
+                    if CONFIG.debug_overlay or CONFIG.force_debug_outlines:
                         # Save into jobs/{id}/result/debug/ paralleling output structure
-                        debug_dir = job_store.get_result_dir(job_id) / "debug"
-                        # Build a debug filename unique to this input and detection
                         safe_name = Path(img_path).stem
-                        debug_path = debug_dir / f"{safe_name}_x{int(d.x)}_y{int(d.y)}_w{int(d.width)}_h{int(d.height)}.png"
+                        debug_path = debug_dir / f"{safe_name}_x{tx}_y{ty}_w{tw}_h{th}.png"
 
                     placement = place_logo_in_box(
                         base_image_path=current_input,
@@ -207,12 +224,13 @@ def process_job_pipeline(job_store: JobStore, job_id: str) -> None:
                     # Next iteration should overlay on last output
                     current_input = temp_out
 
+                    # Log detection box and final placement
                     boxes_for_summary.append(
                         DetectionBox(
-                            x=float(d.x),
-                            y=float(d.y),
-                            width=float(d.width),
-                            height=float(d.height),
+                            x=float(tx),
+                            y=float(ty),
+                            width=float(tw),
+                            height=float(th),
                             confidence=float(d.confidence),
                             method=used_method,
                             page=None,
@@ -220,6 +238,14 @@ def process_job_pipeline(job_store: JobStore, job_id: str) -> None:
                         )
                     )
                     placements_info.append(placement)
+                    qa_item["detections"].append({
+                        "dtype": d.dtype,
+                        "confidence": float(d.confidence),
+                        "normalized": None,  # not stored here; already mapped to absolute
+                        "absolute": {"x": tx, "y": ty, "width": tw, "height": th},
+                    })
+                    qa_item["placements"].append(placement)
+
                     if d.dtype == "text":
                         replaced_text += 1
                     else:
@@ -240,6 +266,20 @@ def process_job_pipeline(job_store: JobStore, job_id: str) -> None:
                 found = False
                 reason = "No region found (default placement used)"
 
+            # Validate placement strictly within detection rectangle
+            for det, plc in zip(boxes_for_summary, placements_info):
+                dx1, dy1 = det.x, det.y
+                dx2, dy2 = det.x + det.width, det.y + det.height
+                px1, py1 = plc.get("x", plc.get("placed_x", 0)), plc.get("y", plc.get("placed_y", 0))
+                px2, py2 = px1 + plc.get("width", plc.get("logo_w", 0)), py1 + plc.get("height", plc.get("logo_h", 0))
+                qa_item.setdefault("assertions", []).append({
+                    "placement_within_detection":
+                        bool(px1 >= dx1 and py1 >= dy1 and px2 <= dx2 and py2 <= dy2),
+                    "detection_box": {"x": dx1, "y": dy1, "w": det.width, "h": det.height},
+                    "placement_box": {"x": px1, "y": py1, "w": plc.get("width", plc.get("logo_w", 0)),
+                                      "h": plc.get("height", plc.get("logo_h", 0))}
+                })
+
             summaries.append(
                 PerFileDetectionSummary(
                     file=str(img_path),
@@ -253,6 +293,7 @@ def process_job_pipeline(job_store: JobStore, job_id: str) -> None:
                     placements=placements_info if placements_info else None,
                 )
             )
+            qa_records.append(qa_item)
 
             progress = int(10 + (idx * 80) / total)
             job_store.update_status(job_id, progress=progress, message=f"Processed {idx}/{total} pages", detections=summaries)
@@ -266,6 +307,29 @@ def process_job_pipeline(job_store: JobStore, job_id: str) -> None:
                 dest = out_dir / rel
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 dest.write_bytes(p.read_bytes())
+
+        # Write QA bundle if enabled
+        if CONFIG.enable_qa_bundle:
+            qa_dir = result_dir / "qa"
+            qa_dir.mkdir(parents=True, exist_ok=True)
+            # meta.json: per-file details, include detection/placement and configuration
+            qa_meta = {
+                "job_id": job_id,
+                "config": {
+                    "fit_mode": CONFIG.overlay_fit_mode,
+                    "padding_pct": CONFIG.overlay_padding_pct,
+                    "logo_max_width_px": CONFIG.logo_max_width_px,
+                    "detect_thumbnail_max_px": CONFIG.detect_thumbnail_max_px,
+                },
+                "files": qa_records,
+            }
+            with (qa_dir / "meta.json").open("w", encoding="utf-8") as f:
+                json.dump(qa_meta, f, indent=2)
+
+        # Preserve debug previews alongside out/
+        if (result_dir / "debug").exists():
+            # No action needed; kept as individual PNGs already
+            pass
 
         # Package into zip
         zip_path = result_dir / "processed.zip"

@@ -34,7 +34,14 @@ class DetectionConfig:
     # Overlay placement configuration
     overlay_fit_mode: str = os.getenv("OVERLAY_FIT_MODE", "contain").lower()  # contain | cover
     overlay_padding_pct: float = float(os.getenv("OVERLAY_PADDING_PCT", "0.0"))  # 0..40 typical
-    debug_overlay: bool = os.getenv("DEBUG_OVERLAY", "false").lower() == "true"  # save debug previews
+
+    # Debugging and QA
+    # Always render debug overlays if true: detection and placed-logo outlines into result/debug
+    debug_overlay: bool = os.getenv("DEBUG_OVERLAY", "false").lower() == "true"
+    # If true, enable a QA bundle to be downloadable and add /jobs/{id}/qa endpoint
+    enable_qa_bundle: bool = os.getenv("ENABLE_QA_BUNDLE", "true").lower() == "true"
+    # If true, force outlines rendering regardless of debug_overlay (temporary dev flag)
+    force_debug_outlines: bool = os.getenv("FORCE_DEBUG_OUTLINES", "true").lower() == "true"
 
 
 CONFIG = DetectionConfig()

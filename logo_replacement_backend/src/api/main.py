@@ -20,6 +20,7 @@ from pydantic import BaseModel, Field
 from src.models.schemas import JobCreated, JobState, JobStatus, ProcessedFile, ProcessedFileList
 from src.services.job_store import JobStore
 from src.services.processing import process_job_pipeline
+from src.config import CONFIG
 
 # App metadata and tags for OpenAPI
 app = FastAPI(
@@ -324,6 +325,57 @@ def download_result_alias(job_id: str):
     return download_result(job_id)
 
 
+# PUBLIC_INTERFACE
+@app.get(
+    "/jobs/{job_id}/qa",
+    summary="Download QA bundle (JSON and debug thumbnails)",
+    description="Return QA metadata JSON and list debug preview files under result/debug for visual inspection.",
+    tags=["jobs"],
+    responses={
+        200: {"description": "QA bundle info"},
+        404: {"model": ErrorResponse, "description": "Job not found or QA not available"},
+        409: {"model": ErrorResponse, "description": "Job not completed"},
+    },
+)
+def get_qa_bundle(job_id: str):
+    """Return QA bundle metadata and files.
+
+    Returns:
+        {
+          "enabled": bool,
+          "meta_json": "/jobs/{id}/files/_qa/meta.json",  # served via internal mapping
+          "debug_images": [ "/jobs/{id}/files/_debug/<file>.png", ... ]
+        }
+    """
+    status_obj = _ensure_job_exists(job_id)
+    if status_obj.status != JobState.COMPLETED:
+        raise HTTPException(status_code=409, detail="Job not completed")
+    if not CONFIG.enable_qa_bundle and not CONFIG.debug_overlay and not os.getenv("FORCE_DEBUG_OUTLINES"):
+        return {"enabled": False, "meta_json": None, "debug_images": []}
+
+    result_dir = JOB_STORE.get_result_dir(job_id)
+    qa_meta = result_dir / "qa" / "meta.json"
+    debug_dir = result_dir / "debug"
+
+    debug_files = []
+    if debug_dir.exists():
+        for p in debug_dir.rglob("*.png"):
+            # expose via dedicated download route mapping under result/debug
+            rel = p.relative_to(result_dir)
+            debug_files.append(f"/jobs/{job_id}/files/{rel.as_posix()}")
+
+    meta_url = None
+    if qa_meta.exists():
+        rel = qa_meta.relative_to(result_dir)
+        meta_url = f"/jobs/{job_id}/files/{rel.as_posix()}"
+
+    return {
+        "enabled": True,
+        "meta_json": meta_url,
+        "debug_images": sorted(debug_files),
+    }
+
+
 def _guess_mime_type(filename: str) -> str:
     """Basic mime guessing for common image/pdf types."""
     ext = Path(filename).suffix.lower()
@@ -398,11 +450,17 @@ def download_processed_file(job_id: str, file_path: str):
     if status_obj.status != JobState.COMPLETED:
         raise HTTPException(status_code=409, detail="Job not completed")
 
-    base_out = JOB_STORE.get_result_dir(job_id) / "out"
+    # Permit serving from result/ to allow debug and QA assets
+    result_dir = JOB_STORE.get_result_dir(job_id)
+    base_out = result_dir / "out"
     base_alt = JOB_STORE.get_work_dir(job_id)
 
-    # Choose base that exists
-    base = base_out if base_out.exists() else base_alt
+    # Choose base that exists; if path starts with "_debug" or "debug" or "qa", switch to result_dir root
+    # If path starts with debug/ or qa/ serve from result dir; else use out/ (or work/ alt)
+    if str(file_path).startswith(("debug/", "qa/", "_debug/", "_qa/")):
+        base = result_dir
+    else:
+        base = base_out if base_out.exists() else base_alt
     if not base.exists():
         raise HTTPException(status_code=404, detail="Processed files not found")
 

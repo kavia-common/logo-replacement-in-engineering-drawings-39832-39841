@@ -34,19 +34,42 @@ def _encode_image_to_data_url(img: Image.Image) -> str:
 
 def _normalize_box(box: dict) -> Optional[Tuple[float, float, float, float, float, str]]:
     """
-    Parse a box dict that should have:
-    { "x": 0-1, "y": 0-1, "w": 0-1, "h": 0-1, "confidence": 0-1, "type": "logo|text" }
+    Parse a box dict supporting multiple shapes:
+    - top-left normalized: {x,y,w,h}
+    - center-based normalized: {cx,cy,w,h} or {center_x,center_y,width,height}
+    - fractional alias keys: {left,top,width,height} as fractions
+    All values expected in 0..1.
+    Returns tuple (x,y,w,h,confidence,type) normalized 0..1.
     """
     try:
-        x = float(box.get("x"))
-        y = float(box.get("y"))
-        w = float(box.get("w"))
-        h = float(box.get("h"))
-        conf = float(box.get("confidence", 0.5))
-        dtype = str(box.get("type", "logo")).lower().strip()
+        # Confidence and type
+        conf = float(box.get("confidence", box.get("score", 0.5)))
+        dtype = str(box.get("type", box.get("category", "logo"))).lower().strip()
         if dtype not in ("logo", "text"):
             dtype = "logo"
-        if not (0 <= x <= 1 and 0 <= y <= 1 and 0 < w <= 1 and 0 < h <= 1):
+
+        # Prefer explicit x,y,w,h
+        if all(k in box for k in ("x", "y", "w", "h")):
+            x = float(box["x"]); y = float(box["y"]); w = float(box["w"]); h = float(box["h"])
+        elif all(k in box for k in ("left", "top", "width", "height")):
+            x = float(box["left"]); y = float(box["top"]); w = float(box["width"]); h = float(box["height"])
+        elif all(k in box for k in ("cx", "cy", "w", "h")):
+            cx = float(box["cx"]); cy = float(box["cy"]); w = float(box["w"]); h = float(box["h"])
+            x = cx - w / 2.0; y = cy - h / 2.0
+        elif all(k in box for k in ("center_x", "center_y", "width", "height")):
+            cx = float(box["center_x"]); cy = float(box["center_y"]); w = float(box["width"]); h = float(box["height"])
+            x = cx - w / 2.0; y = cy - h / 2.0
+        else:
+            return None
+
+        # Validate normalized ranges, clamp slightly for minor drift
+        def _clamp01(v: float) -> float:
+            return max(0.0, min(1.0, v))
+        x = _clamp01(x); y = _clamp01(y); w = _clamp01(w); h = _clamp01(h)
+        if w <= 0.0 or h <= 0.0:
+            return None
+        # Ensure TL inside image
+        if x > 1.0 or y > 1.0:
             return None
         return x, y, w, h, conf, dtype
     except Exception:
