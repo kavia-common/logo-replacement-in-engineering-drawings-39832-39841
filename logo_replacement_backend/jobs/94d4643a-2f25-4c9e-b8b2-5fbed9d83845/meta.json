@@ -1,0 +1,91 @@
+{
+  "job_id": "94d4643a-2f25-4c9e-b8b2-5fbed9d83845",
+  "status": "COMPLETED",
+  "progress": 100,
+  "message": "Completed",
+  "error": null,
+  "result_url": "/jobs/94d4643a-2f25-4c9e-b8b2-5fbed9d83845/download",
+  "created_at": "2025-10-27T11:27:46.856033+00:00",
+  "updated_at": "2025-10-27T11:27:53.227633+00:00",
+  "detections": [
+    {
+      "file": "/home/kavia/workspace/code-generation/logo-replacement-in-engineering-drawings-39832-39841/logo_replacement_backend/jobs/94d4643a-2f25-4c9e-b8b2-5fbed9d83845/uploads/files/Screenshot (139).png",
+      "found": true,
+      "method": "template",
+      "reason": null,
+      "boxes": [
+        {
+          "x": 349.0,
+          "y": 736.0,
+          "width": 21.0,
+          "height": 20.0,
+          "confidence": 0.9999986290931702,
+          "method": "template",
+          "page": null,
+          "dtype": "logo"
+        },
+        {
+          "x": 1254.0,
+          "y": 749.0,
+          "width": 54.0,
+          "height": 14.0,
+          "confidence": 0.55,
+          "method": "template",
+          "page": null,
+          "dtype": "text"
+        },
+        {
+          "x": 173.0,
+          "y": 741.0,
+          "width": 45.0,
+          "height": 15.0,
+          "confidence": 0.55,
+          "method": "template",
+          "page": null,
+          "dtype": "text"
+        }
+      ],
+      "replaced_count": 3,
+      "replaced_logo_count": 1,
+      "replaced_text_count": 2,
+      "placements": [
+        {
+          "x": 349,
+          "y": 736,
+          "width": 21,
+          "height": 20,
+          "fit_mode": "contain",
+          "padding_pct": 0.0,
+          "logo_w": 20,
+          "logo_h": 20,
+          "placed_x": 349,
+          "placed_y": 736
+        },
+        {
+          "x": 1254,
+          "y": 749,
+          "width": 54,
+          "height": 14,
+          "fit_mode": "contain",
+          "padding_pct": 0.0,
+          "logo_w": 14,
+          "logo_h": 14,
+          "placed_x": 1274,
+          "placed_y": 749
+        },
+        {
+          "x": 173,
+          "y": 741,
+          "width": 45,
+          "height": 15,
+          "fit_mode": "contain",
+          "padding_pct": 0.0,
+          "logo_w": 15,
+          "logo_h": 15,
+          "placed_x": 188,
+          "placed_y": 741
+        }
+      ]
+    }
+  ]
+}
